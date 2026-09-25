@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documento → Excel / Word</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1c1e21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-dark: #1d4ed8;
+    --border: #e2e4e9;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 20px; font-size: 0.95rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+  .drop {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .drop.drag { border-color: var(--accent); background: #eff6ff; }
+  .drop input { display: none; }
+  .buttons-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; justify-content: center; }
+  button, .btn {
+    font: inherit;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    cursor: pointer;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+  button:hover { background: var(--accent-dark); }
+  button.secondary { background: #eef0f3; color: var(--text); }
+  button.secondary:hover { background: #e2e4e9; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { background: var(--danger); }
+  #preview { max-width: 100%; max-height: 260px; border-radius: 8px; display: block; margin: 14px auto 0; }
+  .progress-wrap { display: none; margin-top: 14px; }
+  .progress-bar-bg { background: #e2e4e9; border-radius: 6px; height: 8px; overflow: hidden; }
+  .progress-bar { background: var(--accent); height: 100%; width: 0%; transition: width 0.2s; }
+  .progress-label { font-size: 0.85rem; color: var(--muted); margin-top: 6px; text-align: center; }
+  .mode-toggle { display: flex; gap: 8px; margin-bottom: 14px; }
+  .mode-toggle button { flex: 1; background: #eef0f3; color: var(--text); }
+  .mode-toggle button.active { background: var(--accent); color: #fff; }
+  table#editTable { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+  table#editTable td, table#editTable th {
+    border: 1px solid var(--border);
+    padding: 6px 8px;
+    min-width: 60px;
+  }
+  table#editTable td[contenteditable] { outline: none; }
+  table#editTable td[contenteditable]:focus { background: #eff6ff; }
+  .table-scroll { overflow-x: auto; }
+  textarea#freeText {
+    width: 100%;
+    min-height: 220px;
+    font: inherit;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    resize: vertical;
+  }
+  .grid-tools { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .grid-tools button { font-size: 0.8rem; padding: 6px 10px; }
+  .hint { color: var(--muted); font-size: 0.82rem; margin-top: 10px; }
+  .empty-state { color: var(--muted); text-align: center; padding: 30px 10px; }
+  .section-title { font-weight: 600; margin: 0 0 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Documento → Excel / Word</h1>
+  <p class="subtitle">Fotografa o carica un documento, correggi il testo riconosciuto e scaricalo come .xlsx o .docx.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <div id="dropLabel">📷 Scatta una foto o trascina/seleziona un'immagine</div>
+      <input type="file" id="fileInput" accept="image/*" capture="environment">
+    </div>
+    <img id="preview" style="display:none">
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="progress-label" id="progressLabel">Riconoscimento testo…</div>
+    </div>
+    <div class="buttons-row">
+      <button class="secondary" id="chooseBtn" type="button">Scegli immagine</button>
+      <button id="scanBtn" type="button" disabled>Riconosci testo</button>
+    </div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <div class="mode-toggle">
+      <button id="modeTableBtn" class="active" type="button">Tabella</button>
+      <button id="modeTextBtn" type="button">Testo libero</button>
+    </div>
+
+    <div id="tableMode">
+      <div class="grid-tools">
+        <button class="secondary" id="addRowBtn" type="button">+ Riga</button>
+        <button class="secondary" id="addColBtn" type="button">+ Colonna</button>
+        <button class="secondary" id="delRowBtn" type="button">− Riga</button>
+        <button class="secondary" id="delColBtn" type="button">− Colonna</button>
+      </div>
+      <div class="table-scroll">
+        <table id="editTable"></table>
+      </div>
+      <p class="hint">Il riconoscimento delle colonne è automatico e può contenere errori: correggi le celle direttamente cliccandoci sopra prima di scaricare.</p>
+    </div>
+
+    <div id="textMode" style="display:none">
+      <textarea id="freeText" spellcheck="false"></textarea>
+    </div>
+
+    <div class="buttons-row">
+      <button id="downloadXlsx" type="button">Scarica Excel (.xlsx)</button>
+      <button id="downloadDocx" type="button">Scarica Word (.docx)</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+<script>
+(function () {
+  const fileInput = document.getElementById('fileInput');
+  const drop = document.getElementById('drop');
+  const dropLabel = document.getElementById('dropLabel');
+  const chooseBtn = document.getElementById('chooseBtn');
+  const scanBtn = document.getElementById('scanBtn');
+  const preview = document.getElementById('preview');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar = document.getElementById('progressBar');
+  const progressLabel = document.getElementById('progressLabel');
+  const resultCard = document.getElementById('resultCard');
+  const editTable = document.getElementById('editTable');
+  const freeText = document.getElementById('freeText');
+  const modeTableBtn = document.getElementById('modeTableBtn');
+  const modeTextBtn = document.getElementById('modeTextBtn');
+  const tableMode = document.getElementById('tableMode');
+  const textMode = document.getElementById('textMode');
+
+  let currentFile = null;
+  let grid = [['', '', ''], ['', '', ''], ['', '', '']];
+
+  chooseBtn.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('click', (e) => { if (e.target !== fileInput) fileInput.click(); });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files[0]) loadFile(fileInput.files[0]);
+  });
+  ['dragenter', 'dragover'].forEach(ev =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('drag'); }));
+  drop.addEventListener('drop', (e) => {
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
+
+  function loadFile(file) {
+    currentFile = file;
+    const url = URL.createObjectURL(file);
+    preview.src = url;
+    preview.style.display = 'block';
+    dropLabel.textContent = file.name;
+    scanBtn.disabled = false;
+  }
+
+  scanBtn.addEventListener('click', runOcr);
+
+  async function runOcr() {
+    if (!currentFile) return;
+    scanBtn.disabled = true;
+    progressWrap.style.display = 'block';
+    progressBar.style.width = '0%';
+    progressLabel.textContent = 'Preparazione…';
+    try {
+      const result = await Tesseract.recognize(currentFile, 'ita+eng', {
+        logger: (m) => {
+          if (m.status && typeof m.progress === 'number') {
+            progressBar.style.width = Math.round(m.progress * 100) + '%';
+            progressLabel.textContent = translateStatus(m.status) + ' ' + Math.round(m.progress * 100) + '%';
+          }
+        }
+      });
+      grid = wordsToGrid(result.data.words || []);
+      freeText.value = (result.data.text || '').trim();
+      renderTable();
+      resultCard.style.display = 'block';
+      resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (err) {
+      alert('Errore nel riconoscimento del testo: ' + err.message);
+    } finally {
+      progressWrap.style.display = 'none';
+      scanBtn.disabled = false;
+    }
+  }
+
+  function translateStatus(status) {
+    const map = {
+      'loading tesseract core': 'Caricamento motore OCR',
+      'initializing tesseract': 'Inizializzazione',
+      'loading language traineddata': 'Caricamento lingua',
+      'initializing api': 'Preparazione',
+      'recognizing text': 'Riconoscimento testo'
+    };
+    return map[status] || status;
+  }
+
+  // --- OCR words -> table grid heuristic ---
+  function wordsToGrid(words) {
+    if (!words.length) return [['']];
+
+    const heights = words.map(w => w.bbox.y1 - w.bbox.y0).sort((a, b) => a - b);
+    const medianHeight = heights[Math.floor(heights.length / 2)] || 10;
+    const lineThreshold = medianHeight * 0.6;
+
+    // group into lines by vertical center
+    const sorted = [...words].sort((a, b) => (a.bbox.y0 + a.bbox.y1) / 2 - (b.bbox.y0 + b.bbox.y1) / 2);
+    const lines = [];
+    for (const w of sorted) {
+      const cy = (w.bbox.y0 + w.bbox.y1) / 2;
+      let line = lines.find(l => Math.abs(l.cy - cy) < lineThreshold);
+      if (!line) { line = { cy, words: [] }; lines.push(line); }
+      line.words.push(w);
+      line.cy = line.words.reduce((s, x) => s + (x.bbox.y0 + x.bbox.y1) / 2, 0) / line.words.length;
+    }
+    lines.sort((a, b) => a.cy - b.cy);
+    lines.forEach(l => l.words.sort((a, b) => a.bbox.x0 - b.bbox.x0));
+
+    // cluster x0 start positions across all lines into column bands
+    const gapThreshold = medianHeight * 1.8;
+    const xs = words.map(w => w.bbox.x0).sort((a, b) => a - b);
+    const bands = [];
+    for (const x of xs) {
+      let band = bands.find(b => x - b.max < gapThreshold);
+      if (!band) { band = { min: x, max: x }; bands.push(band); }
+      band.min = Math.min(band.min, x);
+      band.max = Math.max(band.max, x);
+    }
+    bands.sort((a, b) => a.min - b.min);
+
+    function bandIndex(x0) {
+      let best = 0, bestDist = Infinity;
+      bands.forEach((b, i) => {
+        const center = (b.min + b.max) / 2;
+        const d = Math.abs(x0 - center);
+        if (d < bestDist) { bestDist = d; best = i; }
+      });
+      return best;
+    }
+
+    const colCount = Math.max(1, bands.length);
+    const result = lines.map(line => {
+      const row = new Array(colCount).fill('');
+      for (const w of line.words) {
+        const idx = bandIndex(w.bbox.x0);
+        row[idx] = row[idx] ? row[idx] + ' ' + w.text : w.text;
+      }
+      return row;
+    });
+
+    return result.length ? result : [['']];
+  }
+
+  // --- editable table rendering ---
+  function renderTable() {
+    editTable.innerHTML = '';
+    grid.forEach((row) => {
+      const tr = document.createElement('tr');
+      row.forEach((cell) => {
+        const td = document.createElement('td');
+        td.contentEditable = 'true';
+        td.textContent = cell;
+        tr.appendChild(td);
+      });
+      editTable.appendChild(tr);
+    });
+  }
+
+  function readGridFromDom() {
+    const rows = [...editTable.querySelectorAll('tr')];
+    return rows.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent));
+  }
+
+  document.getElementById('addRowBtn').addEventListener('click', () => {
+    grid = readGridFromDom();
+    const cols = grid[0] ? grid[0].length : 1;
+    grid.push(new Array(cols).fill(''));
+    renderTable();
+  });
+  document.getElementById('delRowBtn').addEventListener('click', () => {
+    grid = readGridFromDom();
+    if (grid.length > 1) grid.pop();
+    renderTable();
+  });
+  document.getElementById('addColBtn').addEventListener('click', () => {
+    grid = readGridFromDom();
+    grid.forEach(row => row.push(''));
+    renderTable();
+  });
+  document.getElementById('delColBtn').addEventListener('click', () => {
+    grid = readGridFromDom();
+    if (grid[0] && grid[0].length > 1) grid.forEach(row => row.pop());
+    renderTable();
+  });
+
+  // --- mode toggle ---
+  modeTableBtn.addEventListener('click', () => {
+    grid = readGridFromDom() && grid; // keep table state
+    modeTableBtn.classList.add('active');
+    modeTextBtn.classList.remove('active');
+    tableMode.style.display = 'block';
+    textMode.style.display = 'none';
+  });
+  modeTextBtn.addEventListener('click', () => {
+    grid = readGridFromDom();
+    modeTextBtn.classList.add('active');
+    modeTableBtn.classList.remove('active');
+    tableMode.style.display = 'none';
+    textMode.style.display = 'block';
+  });
+
+  // --- export: xlsx ---
+  document.getElementById('downloadXlsx').addEventListener('click', () => {
+    const isTable = tableMode.style.display !== 'none';
+    let data;
+    if (isTable) {
+      data = readGridFromDom();
+    } else {
+      data = freeText.value.split('\n').map(line => [line]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Documento');
+    XLSX.writeFile(wb, 'documento.xlsx');
+  });
+
+  // --- export: docx ---
+  document.getElementById('downloadDocx').addEventListener('click', async () => {
+    const isTable = tableMode.style.display !== 'none';
+    const { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, WidthType } = docx;
+    let doc;
+    if (isTable) {
+      const data = readGridFromDom();
+      const rows = data.map(row => new TableRow({
+        children: row.map(cell => new TableCell({
+          children: [new Paragraph(cell || '')],
+          width: { size: Math.floor(100 / row.length), type: WidthType.PERCENTAGE }
+        }))
+      }));
+      doc = new Document({
+        sections: [{
+          children: [new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } })]
+        }]
+      });
+    } else {
+      const paragraphs = freeText.value.split('\n').map(line => new Paragraph({ children: [new TextRun(line)] }));
+      doc = new Document({ sections: [{ children: paragraphs }] });
+    }
+    const blob = await Packer.toBlob(doc);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'documento.docx';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  renderTable();
+})();
+</script>
+</body>
+</html>
