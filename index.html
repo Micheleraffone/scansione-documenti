@@ -61,7 +61,24 @@
   button.secondary:hover { background: #e2e4e9; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
   button.danger { background: var(--danger); }
-  #preview { max-width: 100%; max-height: 260px; border-radius: 8px; display: block; margin: 14px auto 0; }
+  .editor { display: none; margin-top: 14px; }
+  .canvas-wrap {
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    touch-action: none;
+    background: #000;
+  }
+  .canvas-wrap canvas { display: block; width: 100%; height: auto; }
+  .crop-box {
+    position: absolute;
+    border: 2px dashed #fff;
+    outline: 2px dashed var(--accent);
+    background: rgba(37, 99, 235, 0.2);
+    display: none;
+    pointer-events: none;
+  }
   .progress-wrap { display: none; margin-top: 14px; }
   .progress-bar-bg { background: #e2e4e9; border-radius: 6px; height: 8px; overflow: hidden; }
   .progress-bar { background: var(--accent); height: 100%; width: 0%; transition: width 0.2s; }
@@ -90,8 +107,6 @@
   .grid-tools { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
   .grid-tools button { font-size: 0.8rem; padding: 6px 10px; }
   .hint { color: var(--muted); font-size: 0.82rem; margin-top: 10px; }
-  .empty-state { color: var(--muted); text-align: center; padding: 30px 10px; }
-  .section-title { font-weight: 600; margin: 0 0 10px; }
 </style>
 </head>
 <body>
@@ -104,7 +119,19 @@
       <div id="dropLabel">📷 Scatta una foto o trascina/seleziona un'immagine</div>
       <input type="file" id="fileInput" accept="image/*" capture="environment">
     </div>
-    <img id="preview" style="display:none">
+
+    <div class="editor" id="editorWrap">
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="workCanvas"></canvas>
+        <div class="crop-box" id="cropBox"></div>
+      </div>
+      <div class="buttons-row">
+        <button class="secondary" id="rotateBtn" type="button">⟳ Ruota</button>
+        <button class="secondary" id="resetCropBtn" type="button">Reimposta ritaglio</button>
+      </div>
+      <p class="hint">Trascina sull'immagine per selezionare solo la parte con testo/tabella: ritagliare lo sfondo migliora molto il riconoscimento. Se la foto è storta, usa "Ruota".</p>
+    </div>
+
     <div class="progress-wrap" id="progressWrap">
       <div class="progress-bar-bg"><div class="progress-bar" id="progressBar"></div></div>
       <div class="progress-label" id="progressLabel">Riconoscimento testo…</div>
@@ -155,7 +182,12 @@
   const dropLabel = document.getElementById('dropLabel');
   const chooseBtn = document.getElementById('chooseBtn');
   const scanBtn = document.getElementById('scanBtn');
-  const preview = document.getElementById('preview');
+  const editorWrap = document.getElementById('editorWrap');
+  const canvasWrap = document.getElementById('canvasWrap');
+  const workCanvas = document.getElementById('workCanvas');
+  const cropBox = document.getElementById('cropBox');
+  const rotateBtn = document.getElementById('rotateBtn');
+  const resetCropBtn = document.getElementById('resetCropBtn');
   const progressWrap = document.getElementById('progressWrap');
   const progressBar = document.getElementById('progressBar');
   const progressLabel = document.getElementById('progressLabel');
@@ -167,8 +199,8 @@
   const tableMode = document.getElementById('tableMode');
   const textMode = document.getElementById('textMode');
 
-  let currentFile = null;
   let grid = [['', '', ''], ['', '', ''], ['', '', '']];
+  let cropRectCss = null; // {left, top, width, height} in CSS px relative to canvasWrap
 
   chooseBtn.addEventListener('click', () => fileInput.click());
   drop.addEventListener('click', (e) => { if (e.target !== fileInput) fileInput.click(); });
@@ -185,24 +217,151 @@
   });
 
   function loadFile(file) {
-    currentFile = file;
-    const url = URL.createObjectURL(file);
-    preview.src = url;
-    preview.style.display = 'block';
-    dropLabel.textContent = file.name;
-    scanBtn.disabled = false;
+    const img = new Image();
+    img.onload = () => {
+      const maxSide = 2200;
+      let w = img.naturalWidth, h = img.naturalHeight;
+      const longSide = Math.max(w, h);
+      if (longSide > maxSide) {
+        const scale = maxSide / longSide;
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      workCanvas.width = w;
+      workCanvas.height = h;
+      workCanvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(img.src);
+      clearCrop();
+      editorWrap.style.display = 'block';
+      scanBtn.disabled = false;
+      dropLabel.textContent = file.name;
+    };
+    img.src = URL.createObjectURL(file);
+  }
+
+  // --- rotate ---
+  rotateBtn.addEventListener('click', () => {
+    const w = workCanvas.width, h = workCanvas.height;
+    const rotated = document.createElement('canvas');
+    rotated.width = h;
+    rotated.height = w;
+    const rctx = rotated.getContext('2d');
+    rctx.translate(h / 2, w / 2);
+    rctx.rotate(Math.PI / 2);
+    rctx.drawImage(workCanvas, -w / 2, -h / 2);
+    workCanvas.width = rotated.width;
+    workCanvas.height = rotated.height;
+    workCanvas.getContext('2d').drawImage(rotated, 0, 0);
+    clearCrop();
+  });
+
+  function clearCrop() {
+    cropRectCss = null;
+    cropBox.style.display = 'none';
+  }
+  resetCropBtn.addEventListener('click', clearCrop);
+
+  // --- crop selection (mouse + touch via Pointer Events) ---
+  let dragging = false, startX = 0, startY = 0;
+  canvasWrap.addEventListener('pointerdown', (e) => {
+    const rect = canvasWrap.getBoundingClientRect();
+    startX = e.clientX - rect.left;
+    startY = e.clientY - rect.top;
+    dragging = true;
+    cropBox.style.left = startX + 'px';
+    cropBox.style.top = startY + 'px';
+    cropBox.style.width = '0px';
+    cropBox.style.height = '0px';
+    cropBox.style.display = 'block';
+    e.preventDefault();
+  });
+  canvasWrap.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = canvasWrap.getBoundingClientRect();
+    const curX = e.clientX - rect.left;
+    const curY = e.clientY - rect.top;
+    const left = Math.min(startX, curX), top = Math.min(startY, curY);
+    const width = Math.abs(curX - startX), height = Math.abs(curY - startY);
+    cropBox.style.left = left + 'px';
+    cropBox.style.top = top + 'px';
+    cropBox.style.width = width + 'px';
+    cropBox.style.height = height + 'px';
+    e.preventDefault();
+  });
+  function finishDrag() {
+    if (!dragging) return;
+    dragging = false;
+    const width = parseFloat(cropBox.style.width);
+    const height = parseFloat(cropBox.style.height);
+    if (width < 12 || height < 12) { clearCrop(); return; }
+    cropRectCss = {
+      left: parseFloat(cropBox.style.left),
+      top: parseFloat(cropBox.style.top),
+      width, height
+    };
+  }
+  canvasWrap.addEventListener('pointerup', finishDrag);
+  canvasWrap.addEventListener('pointercancel', finishDrag);
+
+  // --- build the canvas actually sent to OCR (crop + preprocessing) ---
+  function getFinalCanvas() {
+    let source = workCanvas;
+    if (cropRectCss) {
+      const scaleX = workCanvas.width / canvasWrap.clientWidth;
+      const scaleY = workCanvas.height / canvasWrap.clientHeight;
+      const sx = cropRectCss.left * scaleX;
+      const sy = cropRectCss.top * scaleY;
+      const sw = cropRectCss.width * scaleX;
+      const sh = cropRectCss.height * scaleY;
+      const cropped = document.createElement('canvas');
+      cropped.width = Math.max(1, Math.round(sw));
+      cropped.height = Math.max(1, Math.round(sh));
+      cropped.getContext('2d').drawImage(workCanvas, sx, sy, sw, sh, 0, 0, cropped.width, cropped.height);
+      source = cropped;
+    }
+    const out = document.createElement('canvas');
+    out.width = source.width;
+    out.height = source.height;
+    out.getContext('2d').drawImage(source, 0, 0);
+    return out;
+  }
+
+  function preprocess(canvas) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    let min = 255, max = 0;
+    const gray = new Uint8ClampedArray(w * h);
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      gray[p] = g;
+      if (g < min) min = g;
+      if (g > max) max = g;
+    }
+    const range = Math.max(1, max - min);
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      const v = (gray[p] - min) * 255 / range;
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(imgData, 0, 0);
   }
 
   scanBtn.addEventListener('click', runOcr);
 
   async function runOcr() {
-    if (!currentFile) return;
+    if (!workCanvas.width) return;
     scanBtn.disabled = true;
     progressWrap.style.display = 'block';
     progressBar.style.width = '0%';
     progressLabel.textContent = 'Preparazione…';
+    let worker = null;
     try {
-      const result = await Tesseract.recognize(currentFile, 'ita+eng', {
+      const finalCanvas = getFinalCanvas();
+      preprocess(finalCanvas);
+      const blob = await new Promise((res) => finalCanvas.toBlob(res, 'image/png'));
+
+      worker = await Tesseract.createWorker('ita+eng', 1, {
         logger: (m) => {
           if (m.status && typeof m.progress === 'number') {
             progressBar.style.width = Math.round(m.progress * 100) + '%';
@@ -210,14 +369,18 @@
           }
         }
       });
-      grid = wordsToGrid(result.data.words || []);
-      freeText.value = (result.data.text || '').trim();
+      await worker.setParameters({ tessedit_pageseg_mode: '6' });
+      const { data } = await worker.recognize(blob);
+
+      grid = wordsToGrid(data.words || []);
+      freeText.value = (data.text || '').trim();
       renderTable();
       resultCard.style.display = 'block';
       resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (err) {
       alert('Errore nel riconoscimento del testo: ' + err.message);
     } finally {
+      if (worker) await worker.terminate();
       progressWrap.style.display = 'none';
       scanBtn.disabled = false;
     }
@@ -334,7 +497,6 @@
 
   // --- mode toggle ---
   modeTableBtn.addEventListener('click', () => {
-    grid = readGridFromDom() && grid; // keep table state
     modeTableBtn.classList.add('active');
     modeTextBtn.classList.remove('active');
     tableMode.style.display = 'block';
